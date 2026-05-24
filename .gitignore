@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+runs/
+runs*/
+reports/
+reports*/
+.hf_cache/
+data/
+data*/

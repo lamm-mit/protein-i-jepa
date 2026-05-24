@@ -1,0 +1,29 @@
+[project]
+name = "protein-jepa"
+version = "0.1.0"
+description = "A small I-JEPA-style protein sequence representation learning scaffold."
+requires-python = ">=3.10"
+dependencies = [
+  "matplotlib>=3.7",
+  "torch>=2.0",
+]
+
+[project.optional-dependencies]
+hf = [
+  "datasets>=2.18",
+]
+dev = [
+  "datasets>=2.18",
+]
+
+[project.scripts]
+protein-jepa = "protein_jepa.cli:main"
+protein-jepa-download-secondary = "protein_jepa.download_secondary:main"
+protein-jepa-report = "protein_jepa.report:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
