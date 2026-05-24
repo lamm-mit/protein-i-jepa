@@ -390,7 +390,7 @@ The comparison is ordered as `scratch -> frozen JEPA -> fine-tuned JEPA` when
 those run names are present. The pairwise win plot shows Q3 margins for every
 run against every other run; positive values mean the row run beat the column
 run.
-
+![alt text](assets/embedding_predicted_vs_target.svg)
 ![alt text](assets/probe_comparison.png)
 ![](assets/probe_pairwise_wins.svg)
 ![alt text](assets/probe_average_q3.svg)
