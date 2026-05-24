@@ -25,6 +25,38 @@ This Protein-I-JEPA does this:
 visible protein sequence -> predict the target encoder's latent vectors
 ```
 
+The practical difference is the prediction target:
+
+```text
+Masked language modeling
+
+original sequence:  A C D E F G H I K
+masked input:       A C <mask> <mask> F G H I K
+model output:       D, E
+training target:    exact amino-acid tokens
+
+Protein-I-JEPA
+
+original sequence:  A C D E F G H I K
+masked input:       A C <mask> <mask> F G H I K
+context encoder:    masked sequence -> context representations
+target encoder:     full sequence   -> target representations
+predictor output:   predicted vectors for the masked positions
+training target:    target encoder vectors, not token identities
+```
+
+```mermaid
+flowchart LR
+    A["Protein sequence"] --> B["Mask random residue spans"]
+    B --> C["Context encoder"]
+    A --> D["EMA target encoder"]
+    C --> E["Predictor"]
+    E --> F["Predicted latent vectors at masked positions"]
+    D --> G["Target latent vectors at same positions"]
+    F --> H["Latent-space loss"]
+    G --> H
+```
+
 The training loop has three learned components:
 
 - Context encoder: sees a protein sequence where contiguous residue spans have
@@ -39,6 +71,68 @@ not ask the model to reconstruct the exact amino-acid sequence.
 
 This is why the model is JEPA-style: it learns by predicting missing information
 in representation space.
+
+## How To Use A Trained JEPA Model
+
+After pretraining, the JEPA model is usually used as an **encoder**, not as a
+text-like generator.
+
+```text
+protein sequence -> JEPA encoder -> residue embeddings / protein embedding
+```
+
+For residue-level tasks, keep the full sequence of embeddings:
+
+```text
+L residues -> L embedding vectors
+```
+
+That is useful for:
+
+- secondary structure
+- solvent accessibility
+- disorder
+- binding sites
+- active sites
+- mutation-sensitive positions
+
+For protein-level tasks, pool the residue embeddings:
+
+```text
+L embedding vectors -> mean/CLS/attention pool -> one protein embedding
+```
+
+That is useful for:
+
+- enzyme class prediction
+- GO/function prediction
+- remote homology
+- localization
+- family/domain classification
+- stability or fitness prediction
+- embedding search and clustering
+
+There are three common downstream modes:
+
+```text
+Frozen feature extractor:
+sequence -> frozen JEPA encoder -> small task head
+
+Fine-tuning:
+sequence -> JEPA encoder + task head, all trainable
+
+Embedding database:
+protein library -> JEPA embeddings -> nearest-neighbor search / clustering
+```
+
+The secondary-structure probe in this repository is the first two modes:
+
+```text
+sequence -> JEPA encoder -> per-residue embeddings -> H/E/C classifier
+```
+
+The frozen probe is the cleanest representation test. The fine-tuned probe asks
+whether JEPA gives a good initialization for a supervised biological task.
 
 ## What This Code Does
 
@@ -152,6 +246,26 @@ python scripts/train_protein_jepa.py pretrain \
   --max-length 256 \
   --device auto \
   --output-dir runs/uniref50_jepa
+```
+Larger dataset:
+
+```bash
+python scripts/train_protein_jepa.py pretrain \
+  --hf-dataset lamm-mit/UniRef50_512_all \
+  --max-sequences 100000 \
+  --steps 1000 \
+  --batch-size 128 \
+  --max-length 256 \
+  --device auto \
+  --output-dir runs/uniref50_jepa
+```
+
+Note:
+
+```
+--max-sequences 100000 --steps 1000 --batch-size 128  -> ~1.28 epochs
+--max-sequences 100000 --steps 5000 --batch-size 128  -> ~6.4 epochs
+--max-sequences 10000  --steps 1000 --batch-size 128  -> ~12.8 epochs
 ```
 
 5. Train a frozen secondary-structure probe on the JEPA encoder.
@@ -707,3 +821,199 @@ These are not implemented yet, but they are natural extensions:
 For serious scientific evaluation, prefer curated or homology-aware external
 tests. Random single-TSV splits can overestimate performance because related
 proteins may appear in both training and validation sets.
+
+## Future Extensions For Coding Agents
+
+The current code is a clean sequence-only Protein-I-JEPA scaffold. A future
+coding agent can extend it into a richer protein foundation-model prototype by
+adding more biological target views during pretraining.
+
+The main design rule is:
+
+```text
+probe = tests what the representation knows
+pretraining target = teaches the representation what to know
+```
+
+The current pretraining target is:
+
+```text
+masked sequence context -> target encoder latent vectors from the full sequence
+```
+
+A richer multi-view version could rotate across objectives:
+
+```text
+masked sequence context + <sequence_view>  -> sequence latent
+masked sequence context + <structure_view> -> structure latent
+masked sequence context + <evolution_view> -> MSA/profile latent
+masked sequence context + <function_view>  -> function/domain latent
+```
+
+or predict several views at once:
+
+```text
+loss =
+  sequence_jepa_loss
+  + structure_jepa_loss
+  + evolution_jepa_loss
+  + function_jepa_loss
+```
+
+Good feature views to add:
+
+- secondary structure, solvent accessibility, and disorder from NetSurfP-style
+  labels
+- contact maps or distance bins from PDB or AlphaFold structures
+- backbone torsion bins or local residue-environment descriptors
+- MSA/PSSM/profile features and conservation scores
+- Pfam/domain, GO, EC, active-site, or binding-site annotations
+- mutation fitness or stability measurements when available
+
+Concrete multi-view examples:
+
+```text
+Sequence-only JEPA, current code:
+masked amino-acid sequence
+  -> context encoder
+  -> predict sequence target-encoder latents at masked residues
+
+Structure-view JEPA:
+masked amino-acid sequence + <structure_view>
+  -> context encoder
+  -> predict latent vectors from secondary structure, solvent accessibility,
+     disorder, torsion, or local 3D environment features
+
+Evolution-view JEPA:
+masked amino-acid sequence + <evolution_view>
+  -> context encoder
+  -> predict latent vectors from MSA profiles, PSSM columns, conservation, or
+     co-evolution features
+
+Function-view JEPA:
+masked amino-acid sequence + <function_view>
+  -> context encoder
+  -> predict protein-level or residue-level function/domain latent vectors
+
+Contact-view JEPA:
+masked amino-acid sequence + <contact_view>
+  -> context encoder
+  -> predict latent vectors summarizing residue-residue contacts or distance
+     bins for the masked region
+```
+
+Specification and tokenization:
+
+Use the existing amino-acid tokenizer for the protein sequence. Do not force all
+biological features into amino-acid tokens.
+
+```text
+sequence:
+  input type: amino-acid string
+  tokenizer: existing ProteinAlphabet
+  shape after encoder: [batch, length, embed_dim]
+
+secondary structure:
+  input type: categorical per-residue labels such as H/E/C
+  tokenizer: small feature vocabulary or one-hot labels
+  shape after feature encoder: [batch, length, feature_dim]
+
+solvent accessibility / disorder:
+  input type: per-residue numeric values or bins
+  tokenizer: none for continuous values, small vocabulary for bins
+  shape after projection/encoder: [batch, length, feature_dim]
+
+MSA/PSSM profile:
+  input type: per-residue numeric vector
+  tokenizer: none
+  shape before projection: [batch, length, profile_dim]
+
+contacts/distances:
+  input type: pairwise matrix or local contact neighborhood
+  tokenizer: none for numeric bins, optional small vocabulary for distance bins
+  shape before encoder: [batch, length, length] or sparse contact features
+
+function/domain:
+  input type: protein-level or region-level categorical/multi-label annotation
+  tokenizer: feature vocabulary for labels, not amino-acid vocabulary
+  shape after encoder: [batch, feature_dim] or [batch, length, feature_dim]
+```
+
+The clean pattern is:
+
+```text
+ProteinAlphabet tokenizes only the amino-acid sequence.
+Each biological view gets its own feature encoder or projection.
+The shared context encoder predicts into the selected target view's latent
+space.
+```
+
+For example, a NetSurfP-style structure view could start simple:
+
+```text
+sequence tokens:
+  A C D E F G ...
+
+aligned feature labels:
+  H H E E C C ...
+
+sequence context:
+  A C <mask> <mask> F G ...
+
+target view:
+  structure encoder(H H E E C C ...) -> structure latents
+
+loss:
+  predictor(context latents at masked positions)
+    vs.
+  structure latents at those positions
+```
+
+A task/view token can tell the predictor what latent space to produce:
+
+```text
+<sequence_view>  -> predict sequence latents
+<structure_view> -> predict structure latents
+<evolution_view> -> predict MSA/profile latents
+<function_view>  -> predict function/domain latents
+```
+
+Implementation roadmap:
+
+1. Add a new dataset module that returns `sequence` plus one or more aligned
+   feature views. Keep residue-level features the same length as the sequence.
+2. Add a target encoder for the new view, or a small projection network if the
+   view is already numeric.
+3. Add a predictor head for that view. Keep the current sequence predictor
+   intact.
+4. Extend the training batch to include a `view_name` or task token such as
+   `<sequence_view>`, `<structure_view>`, or `<evolution_view>`.
+5. Compute a view-specific latent prediction loss at masked positions, using
+   ignore masks where a residue lacks labels.
+6. Log each loss separately, for example `sequence_loss`, `structure_loss`, and
+   `evolution_loss`, plus the summed training loss.
+7. Add probes that test whether the new pretraining target helped on held-out
+   biological tasks.
+8. Update `scripts/make_training_report.py` so the report compares both
+   pretraining losses and downstream probe metrics.
+
+Files most likely to change:
+
+- `src/protein_jepa/data.py`: add multi-view dataset loading and collation.
+- `src/protein_jepa/masking.py`: optionally add biologically informed masks,
+  such as conserved-position masks or contact-neighborhood masks.
+- `src/protein_jepa/model.py`: add view-specific target encoders or predictor
+  heads.
+- `src/protein_jepa/train.py`: add the multi-view training objective and
+  metrics.
+- `src/protein_jepa/probe.py`: add new probes for new biological tasks.
+- `src/protein_jepa/report.py`: summarize multi-view losses and probe results.
+- `tests/`: add small synthetic multi-view batches so the whole path is tested
+  without downloading large biological datasets.
+
+This is not conceptually hard, but the scientific quality depends on the target
+views. A supervised label head that directly predicts `H/E/C` is useful, but it
+is less JEPA-like than predicting a latent representation produced by a
+structure or feature target encoder. The strongest direction is multi-view
+latent prediction: sequence, structure, evolution, and function as related
+views of the same protein.
