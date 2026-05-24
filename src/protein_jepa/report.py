@@ -50,6 +50,19 @@ IMPORTANT_CONFIG = (
     "freeze_encoder",
 )
 
+COMPARISON_METRICS = (
+    "val_q3",
+    "test_cb513_q3",
+    "test_ts115_q3",
+    "test_casp12_q3",
+    "test_casp14_fm_q3",
+    "val_loss",
+    "test_cb513_loss",
+    "test_ts115_loss",
+    "test_casp12_loss",
+    "test_casp14_fm_loss",
+)
+
 
 def build_report(
     *,
@@ -76,6 +89,19 @@ def build_report(
         for run_dir in pretrain_dirs:
             lines.extend(_run_section(run_dir, output_path, config_name="config.json", label="Pretraining"))
     if probe_dirs:
+        comparison_rows = probe_comparison_rows(probe_dirs)
+        if comparison_rows:
+            lines.extend(
+                [
+                    "## Probe Comparison",
+                    "",
+                    "This table compares the probe runs passed to `--probe-dir`.",
+                    "Higher Q3 is better. Lower loss is better.",
+                    "",
+                    probe_comparison_markdown(comparison_rows),
+                    "",
+                ]
+            )
         lines.extend(["## Probe Runs", ""])
         for run_dir in probe_dirs:
             lines.extend(_run_section(run_dir, output_path, config_name="probe_config.json", label="Probe"))
@@ -115,7 +141,59 @@ def main(argv: list[str] | None = None) -> None:
         probe_dirs=args.probe_dir,
         title=args.title,
     )
+    comparison_rows = probe_comparison_rows(args.probe_dir)
+    if comparison_rows:
+        print("Probe comparison:", flush=True)
+        print(probe_comparison_text(comparison_rows), flush=True)
     print(json.dumps({"report": str(report_path)}), flush=True)
+
+
+def probe_comparison_rows(probe_dirs: Iterable[str | Path]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for run_dir_like in probe_dirs:
+        run_dir = Path(run_dir_like)
+        final_metrics = _final_metrics(run_dir)
+        test_metrics = _read_json(run_dir / "test_metrics.json")
+        combined = {**final_metrics, **test_metrics}
+        if not combined:
+            continue
+        row = {"run": str(run_dir)}
+        for metric in COMPARISON_METRICS:
+            if metric in combined:
+                row[metric] = _format_value(combined[metric])
+        rows.append(row)
+    return rows
+
+
+def probe_comparison_markdown(rows: list[dict[str, str]]) -> str:
+    columns = _comparison_columns(rows)
+    header = "| " + " | ".join(f"`{column}`" for column in columns) + " |"
+    divider = "| " + " | ".join("---" for _ in columns) + " |"
+    body = ["| " + " | ".join(row.get(column, "") for column in columns) + " |" for row in rows]
+    return "\n".join([header, divider, *body])
+
+
+def probe_comparison_text(rows: list[dict[str, str]]) -> str:
+    columns = _comparison_columns(rows)
+    widths = {
+        column: max(len(column), *(len(row.get(column, "")) for row in rows))
+        for column in columns
+    }
+    header = "  ".join(column.ljust(widths[column]) for column in columns)
+    divider = "  ".join("-" * widths[column] for column in columns)
+    body = [
+        "  ".join(row.get(column, "").ljust(widths[column]) for column in columns)
+        for row in rows
+    ]
+    return "\n".join([header, divider, *body])
+
+
+def _comparison_columns(rows: list[dict[str, str]]) -> list[str]:
+    columns = ["run"]
+    for metric in COMPARISON_METRICS:
+        if any(metric in row for row in rows):
+            columns.append(metric)
+    return columns
 
 
 def _run_section(run_dir: Path, output_path: Path, *, config_name: str, label: str) -> list[str]:
@@ -156,6 +234,11 @@ def _read_metrics(run_dir: Path) -> list[dict]:
             if line.strip():
                 rows.append(json.loads(line))
     return rows
+
+
+def _final_metrics(run_dir: Path) -> dict:
+    metrics = _read_metrics(run_dir)
+    return metrics[-1] if metrics else {}
 
 
 def _ordered_items(values: dict, preferred_order: tuple[str, ...]) -> list[tuple[str, str]]:

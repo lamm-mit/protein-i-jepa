@@ -254,7 +254,9 @@ python scripts/make_training_report.py \
 
 The report is written to `runs/reports/uniref50_jepa_report.md`. It embeds the PNG
 figures and links the SVG versions so you can use either bitmap or vector
-graphics in slides and documents.
+graphics in slides and documents. It also prints and saves a probe-comparison
+table across all `--probe-dir` runs, including `val_q3` and any external test
+metrics such as `test_cb513_q3`, `test_ts115_q3`, and `test_casp12_q3`.
 
 If you do not have a labeled secondary-structure dataset yet, run the complete
 synthetic smoke workflow instead:
@@ -352,6 +354,39 @@ python scripts/train_protein_jepa.py pretrain \
   --hf-dataset lamm-mit/UniRef50_512_all \
   --hf-split 'train[:50000]'
 ```
+
+## Model Size
+
+The encoder is a Transformer encoder. You can control its size during JEPA
+pretraining with:
+
+- `--embed-dim`: hidden width of each residue representation.
+- `--depth`: number of Transformer encoder blocks.
+- `--num-heads`: attention heads per block.
+- `--dropout`: dropout inside the Transformer.
+- `--max-length`: maximum sequence length and positional embedding length.
+
+Example larger pretraining run:
+
+```bash
+python scripts/train_protein_jepa.py pretrain \
+  --hf-dataset lamm-mit/UniRef50_512_all \
+  --max-sequences 10000 \
+  --embed-dim 256 \
+  --depth 6 \
+  --num-heads 8 \
+  --dropout 0.1 \
+  --max-length 256 \
+  --steps 1000 \
+  --batch-size 32 \
+  --output-dir runs/uniref50_jepa_256d_6l
+```
+
+For frozen or fine-tuned JEPA probes, the encoder size comes from the checkpoint
+you pass with `--checkpoint`. Set the size during pretraining, not during the
+probe command. For a scratch probe baseline with no checkpoint, the probe
+command's `--embed-dim`, `--depth`, `--num-heads`, `--dropout`, and
+`--max-length` define the randomly initialized encoder.
 
 ## Pretraining Outputs
 
@@ -611,6 +646,11 @@ Each probe run writes:
   `--hf-test-split` was used.
 - `probe_curves.png`: raster plot.
 - `probe_curves.svg`: vector plot.
+
+When you pass multiple probe directories to `scripts/make_training_report.py`,
+the report starts with a `Probe Comparison` table and prints the same table in
+the terminal. This is where the scratch baseline, frozen JEPA probe, and
+fine-tuned JEPA probe are compared directly.
 
 The logged probe metrics include:
 
