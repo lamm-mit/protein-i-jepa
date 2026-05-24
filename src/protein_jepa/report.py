@@ -81,6 +81,7 @@ def build_report(
             "- Very small `pred_std` can indicate collapse, where predictions become nearly constant.",
             "- Higher `val_q3` means better held-out per-residue secondary-structure prediction.",
             "- Compare the JEPA probe against a scratch probe to see whether self-supervised pretraining helped.",
+            "- In the embedding plot, predicted points near their matching target cloud indicate better latent-space prediction.",
             "",
         ]
     )

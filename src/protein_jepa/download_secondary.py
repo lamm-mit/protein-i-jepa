@@ -9,7 +9,7 @@ from protein_jepa.alphabet import ProteinAlphabet
 from protein_jepa.probe import map_q8_to_q3
 
 
-DEFAULT_DATASET = "neuralninja110/protein-secondary-structure-nppe2"
+DEFAULT_DATASET = "lamm-mit/protein-secondary-structure-nppe2"
 
 
 def download_secondary_structure_tsv(
@@ -104,4 +104,3 @@ def _normalize_labels(labels: str) -> str:
 
 if __name__ == "__main__":
     main()
-

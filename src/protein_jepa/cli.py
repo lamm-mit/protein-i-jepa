@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 from protein_jepa.probe import ProbeConfig, train_secondary_probe
 from protein_jepa.train import TrainConfig, train
+from protein_jepa.visualize import EmbeddingPlotConfig, plot_embeddings
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,6 +65,29 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--depth", type=int, default=4, help="Scratch baseline encoder depth.")
     probe.add_argument("--num-heads", type=int, default=6, help="Scratch baseline attention heads.")
     probe.add_argument("--dropout", type=float, default=0.1)
+
+    embeddings = subparsers.add_parser("plot-embeddings", help="Plot predicted and target JEPA latents in 2D.")
+    embeddings.add_argument("--checkpoint", type=str, required=True, help="Protein-I-JEPA checkpoint.")
+    embeddings.add_argument("--fasta", type=str, default=None, help="Optional FASTA file for visualization examples.")
+    embeddings.add_argument("--hf-dataset", type=str, default=None, help="Optional Hugging Face dataset name.")
+    embeddings.add_argument("--hf-split", type=str, default="train")
+    embeddings.add_argument("--hf-sequence-field", type=str, default="Sequence")
+    embeddings.add_argument("--hf-length-field", type=str, default="Seq_Length")
+    embeddings.add_argument("--hf-streaming", action="store_true")
+    embeddings.add_argument("--synthetic", action="store_true", help="Use synthetic protein sequences.")
+    embeddings.add_argument("--output-dir", type=str, default=None, help="Defaults to the checkpoint directory.")
+    embeddings.add_argument("--max-sequences", type=int, default=None)
+    embeddings.add_argument("--synthetic-sequences", type=int, default=128)
+    embeddings.add_argument("--min-length", type=int, default=48)
+    embeddings.add_argument("--max-length", type=int, default=None)
+    embeddings.add_argument("--batch-size", type=int, default=16)
+    embeddings.add_argument("--num-batches", type=int, default=8)
+    embeddings.add_argument("--max-points", type=int, default=2000)
+    embeddings.add_argument("--seed", type=int, default=0)
+    embeddings.add_argument("--mask-fraction", type=float, default=None)
+    embeddings.add_argument("--min-span", type=int, default=None)
+    embeddings.add_argument("--max-span", type=int, default=None)
+    embeddings.add_argument("--device", type=str, default="auto")
     return parser
 
 
@@ -127,5 +152,30 @@ def main(argv: list[str] | None = None) -> None:
             dropout=args.dropout,
         )
         train_secondary_probe(config)
+    elif args.command == "plot-embeddings":
+        config = EmbeddingPlotConfig(
+            checkpoint=args.checkpoint,
+            fasta=args.fasta,
+            hf_dataset=args.hf_dataset,
+            hf_split=args.hf_split,
+            hf_sequence_field=args.hf_sequence_field,
+            hf_length_field=args.hf_length_field or None,
+            hf_streaming=args.hf_streaming,
+            synthetic=args.synthetic,
+            output_dir=args.output_dir,
+            max_sequences=args.max_sequences,
+            synthetic_sequences=args.synthetic_sequences,
+            min_length=args.min_length,
+            max_length=args.max_length,
+            batch_size=args.batch_size,
+            num_batches=args.num_batches,
+            max_points=args.max_points,
+            seed=args.seed,
+            mask_fraction=args.mask_fraction,
+            min_span=args.min_span,
+            max_span=args.max_span,
+            device=args.device,
+        )
+        print(json.dumps(plot_embeddings(config)), flush=True)
     else:
         parser.error(f"Unknown command: {args.command}")

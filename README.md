@@ -64,6 +64,7 @@ Reusable package code lives in `src/protein_jepa/`:
 - `train.py`: JEPA pretraining loop.
 - `probe.py`: secondary-structure probe.
 - `metrics.py`: JSONL/CSV logging and PNG/SVG plots.
+- `visualize.py`: predicted-vs-target latent embedding plots.
 - `report.py`: Markdown report generation from saved run directories.
 - `download_secondary.py`: download/convert secondary-structure labels to TSV.
 
@@ -106,7 +107,7 @@ python scripts/download_secondary_structure.py \
   --output data/secondary_structure.tsv
 ```
 
-The default source is `neuralninja110/protein-secondary-structure-nppe2` from
+The default source is `lamm-mit/protein-secondary-structure-nppe2` from
 Hugging Face. It provides protein sequences in `seq` and per-residue secondary
 structure labels in `sst3` and `sst8`.
 
@@ -162,7 +163,23 @@ python scripts/train_protein_jepa.py probe-secondary \
   --output-dir runs/secondary_probe_finetuned
 ```
 
-7. Build a report that embeds all generated figures:
+7. Plot predicted versus target JEPA latents in 2D:
+
+```bash
+python scripts/train_protein_jepa.py plot-embeddings \
+  --checkpoint runs/uniref50_jepa/protein_jepa.pt \
+  --hf-dataset lamm-mit/UniRef50_512_all \
+  --max-sequences 512 \
+  --num-batches 8 \
+  --max-points 2000 \
+  --device auto \
+  --output-dir runs/uniref50_jepa
+```
+
+This writes `embedding_predicted_vs_target.png` and
+`embedding_predicted_vs_target.svg`.
+
+8. Build a report that embeds all generated figures:
 
 ```bash
 python scripts/make_training_report.py \
@@ -197,6 +214,14 @@ python scripts/train_protein_jepa.py probe-secondary \
   --max-length 96 \
   --device auto \
   --output-dir runs/probe-smoke
+
+python scripts/train_protein_jepa.py plot-embeddings \
+  --checkpoint runs/smoke/protein_jepa.pt \
+  --synthetic \
+  --num-batches 2 \
+  --max-points 500 \
+  --device auto \
+  --output-dir runs/smoke
 
 python scripts/make_training_report.py \
   --pretrain-dir runs/smoke \
@@ -277,6 +302,9 @@ Each pretraining run writes these files to `--output-dir`:
 - `metrics.csv`: same metrics in a spreadsheet-friendly format.
 - `training_curves.png`: raster plot for reports and notebooks.
 - `training_curves.svg`: vector plot for slides and papers.
+- `embedding_predicted_vs_target.png`: 2D PCA plot of predicted and target JEPA
+  latents, if you run `plot-embeddings`.
+- `embedding_predicted_vs_target.svg`: vector version of the embedding plot.
 
 The logged metrics include:
 
@@ -302,6 +330,44 @@ How to read the curves:
   predicts nearly the same vector everywhere.
 - A large train/validation gap suggests overfitting to the sampled sequences or
   too little validation data.
+
+## Embedding Visualization
+
+The `plot-embeddings` command visualizes what the JEPA objective is doing. It
+loads a checkpoint, samples masked spans, collects two sets of vectors, and
+projects them to two dimensions with PCA:
+
+- predicted latents: the predictor output from the masked context.
+- target latents: the EMA target encoder output from the unmasked sequence.
+
+Run it on the same sequence source used for pretraining:
+
+```bash
+python scripts/train_protein_jepa.py plot-embeddings \
+  --checkpoint runs/uniref50_jepa/protein_jepa.pt \
+  --hf-dataset lamm-mit/UniRef50_512_all \
+  --max-sequences 512 \
+  --num-batches 8 \
+  --max-points 2000 \
+  --device auto \
+  --output-dir runs/uniref50_jepa
+```
+
+The plot is saved as:
+
+- `embedding_predicted_vs_target.png`
+- `embedding_predicted_vs_target.svg`
+
+How to interpret it:
+
+- If predicted and target clouds overlap more over training, the predictor is
+  learning to match the target latent distribution.
+- Shorter gray lines between matched predicted/target points indicate better
+  per-position latent prediction in the 2D projection.
+- If predicted points collapse into a tiny cluster while target points remain
+  spread out, the model may be collapsing or the predictor may be too weak.
+- This is a qualitative visualization. Use `val_loss`, `val_cosine`, and
+  downstream probe accuracy for quantitative judgment.
 
 ## Probes
 
@@ -362,7 +428,7 @@ Or explicitly choose fields:
 
 ```bash
 python scripts/download_secondary_structure.py \
-  --hf-dataset neuralninja110/protein-secondary-structure-nppe2 \
+  --hf-dataset lamm-mit/protein-secondary-structure-nppe2 \
   --split train \
   --sequence-field seq \
   --label-field sst3 \
