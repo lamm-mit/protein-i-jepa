@@ -8,7 +8,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from protein_jepa.report import build_report, main, probe_comparison_text
+from protein_jepa.report import build_report, main, plot_probe_comparison, probe_comparison_rows, probe_comparison_text
 
 
 class ReportTests(unittest.TestCase):
@@ -52,22 +52,65 @@ class ReportTests(unittest.TestCase):
             self.assertIn("training_curves.svg", text)
             self.assertIn("probe_curves.png", text)
             self.assertIn("Probe Comparison", text)
+            self.assertIn("probe_comparison.png", text)
+            self.assertIn("probe_comparison.svg", text)
             self.assertIn("`val_q3`", text)
             self.assertIn("`test_cb513_q3`", text)
             self.assertIn(str(scratch), text)
             self.assertIn("External test metrics", text)
             self.assertIn("`test_cb513_q3`", text)
+            self.assertTrue((output.parent / "probe_comparison.png").exists())
+            self.assertTrue((output.parent / "probe_comparison.svg").exists())
+            self.assertGreater((output.parent / "probe_comparison.png").stat().st_size, 0)
+            self.assertGreater((output.parent / "probe_comparison.svg").stat().st_size, 0)
 
     def test_probe_comparison_text_formats_rows(self):
         table = probe_comparison_text(
             [
-                {"run": "runs/secondary_probe_jepa", "val_q3": "0.7", "test_cb513_q3": "0.6"},
                 {"run": "runs/secondary_probe_scratch", "val_q3": "0.4", "test_cb513_q3": "0.35"},
+                {"run": "runs/secondary_probe_jepa", "val_q3": "0.7", "test_cb513_q3": "0.6"},
             ]
         )
         self.assertIn("run", table)
         self.assertIn("test_cb513_q3", table)
         self.assertIn("runs/secondary_probe_scratch", table)
+
+    def test_probe_comparison_rows_orders_scratch_frozen_finetuned(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            for name, val_q3 in [
+                ("secondary_probe_jepa", 0.7),
+                ("secondary_probe_scratch", 0.4),
+                ("secondary_probe_finetuned", 0.8),
+            ]:
+                run_dir = root / name
+                run_dir.mkdir()
+                (run_dir / "metrics.jsonl").write_text(json.dumps({"step": 1, "val_q3": val_q3}) + "\n", encoding="utf-8")
+            rows = probe_comparison_rows(
+                [
+                    root / "secondary_probe_jepa",
+                    root / "secondary_probe_scratch",
+                    root / "secondary_probe_finetuned",
+                ]
+            )
+            self.assertEqual(
+                [Path(row["run"]).name for row in rows],
+                ["secondary_probe_scratch", "secondary_probe_jepa", "secondary_probe_finetuned"],
+            )
+
+    def test_plot_probe_comparison_writes_png_and_svg(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = plot_probe_comparison(
+                Path(tmpdir),
+                [
+                    {"run": "runs/secondary_probe_jepa", "val_q3": "0.7", "test_cb513_q3": "0.6"},
+                    {"run": "runs/secondary_probe_scratch", "val_q3": "0.4", "test_cb513_q3": "0.35"},
+                ],
+            )
+            self.assertEqual({path.suffix for path in paths}, {".png", ".svg"})
+            for path in paths:
+                self.assertTrue(path.exists())
+                self.assertGreater(path.stat().st_size, 0)
 
     def test_main_prints_probe_comparison(self):
         with tempfile.TemporaryDirectory() as tmpdir:

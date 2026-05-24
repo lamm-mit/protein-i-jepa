@@ -270,6 +270,9 @@ Note:
 
 5. Train a frozen secondary-structure probe on the JEPA encoder.
 
+This is the `frozen JEPA` condition in the report plots: JEPA is pretrained,
+the encoder is frozen, and only the secondary-structure head is trained.
+
 Local TSV version:
 
 ```bash
@@ -307,6 +310,10 @@ python scripts/train_protein_jepa.py probe-secondary \
 
 6. Train a scratch probe baseline with no JEPA checkpoint:
 
+This is the `scratch` condition: there is no JEPA pretraining checkpoint. The
+baseline uses a randomly initialized encoder, so it tests what performance looks
+like without a learned JEPA representation.
+
 ```bash
 python scripts/train_protein_jepa.py probe-secondary \
   --train-labels-tsv data/netsurfp/train.tsv \
@@ -322,6 +329,10 @@ python scripts/train_protein_jepa.py probe-secondary \
 ```
 
 7. Optionally fine-tune the JEPA encoder during probing:
+
+This is the `fine-tuned JEPA` condition: the JEPA checkpoint initializes the
+encoder, then both the encoder and secondary-structure head are trained on the
+labeled probe data.
 
 ```bash
 python scripts/train_protein_jepa.py probe-secondary \
@@ -370,7 +381,12 @@ The report is written to `runs/reports/uniref50_jepa_report.md`. It embeds the P
 figures and links the SVG versions so you can use either bitmap or vector
 graphics in slides and documents. It also prints and saves a probe-comparison
 table across all `--probe-dir` runs, including `val_q3` and any external test
-metrics such as `test_cb513_q3`, `test_ts115_q3`, and `test_casp12_q3`.
+metrics such as `test_cb513_q3`, `test_ts115_q3`, and `test_casp12_q3`. The
+report directory also gets `probe_comparison.png` and `probe_comparison.svg`,
+which are embedded/linked from the report. The comparison is ordered as
+`scratch -> frozen JEPA -> fine-tuned JEPA` when those run names are present.
+
+![alt text](assets/probe_comparison.png)
 
 If you do not have a labeled secondary-structure dataset yet, run the complete
 synthetic smoke workflow instead:
@@ -764,7 +780,8 @@ Each probe run writes:
 When you pass multiple probe directories to `scripts/make_training_report.py`,
 the report starts with a `Probe Comparison` table and prints the same table in
 the terminal. This is where the scratch baseline, frozen JEPA probe, and
-fine-tuned JEPA probe are compared directly.
+fine-tuned JEPA probe are compared directly. It also writes
+`probe_comparison.png` and `probe_comparison.svg` next to the report.
 
 The logged probe metrics include:
 

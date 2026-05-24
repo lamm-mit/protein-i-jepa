@@ -102,6 +102,14 @@ def build_report(
                     "",
                 ]
             )
+            figure_paths = plot_probe_comparison(output_path.parent, comparison_rows)
+            if figure_paths:
+                png = next((path for path in figure_paths if path.suffix == ".png"), None)
+                svg = next((path for path in figure_paths if path.suffix == ".svg"), None)
+                if png is not None:
+                    lines.extend([f"![probe_comparison]({_relative_link(png, output_path)})", ""])
+                if svg is not None:
+                    lines.extend([f"[SVG version]({_relative_link(svg, output_path)})", ""])
         lines.extend(["## Probe Runs", ""])
         for run_dir in probe_dirs:
             lines.extend(_run_section(run_dir, output_path, config_name="probe_config.json", label="Probe"))
@@ -162,7 +170,7 @@ def probe_comparison_rows(probe_dirs: Iterable[str | Path]) -> list[dict[str, st
             if metric in combined:
                 row[metric] = _format_value(combined[metric])
         rows.append(row)
-    return rows
+    return sorted(rows, key=lambda row: _run_sort_key(row["run"]))
 
 
 def probe_comparison_markdown(rows: list[dict[str, str]]) -> str:
@@ -188,12 +196,117 @@ def probe_comparison_text(rows: list[dict[str, str]]) -> str:
     return "\n".join([header, divider, *body])
 
 
+def plot_probe_comparison(output_dir: Path, rows: list[dict[str, str]]) -> list[Path]:
+    q3_metrics = [metric for metric in COMPARISON_METRICS if metric.endswith("_q3") and any(metric in row for row in rows)]
+    if not q3_metrics:
+        return []
+    try:
+        plot_cache = output_dir / ".matplotlib"
+        plot_cache.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("MPLCONFIGDIR", str(plot_cache))
+        import matplotlib
+
+        matplotlib.use("Agg")
+        from matplotlib import pyplot as plt
+    except ImportError:
+        return []
+
+    run_labels = [_short_run_label(row["run"]) for row in rows]
+    width = 0.8 / max(1, len(q3_metrics))
+    x_positions = list(range(len(rows)))
+
+    fig_width = max(8.0, 1.8 * len(rows) + 1.2 * len(q3_metrics))
+    fig, axis = plt.subplots(figsize=(fig_width, 5.2))
+    for metric_index, metric in enumerate(q3_metrics):
+        offset = (metric_index - (len(q3_metrics) - 1) / 2) * width
+        values = [_to_float(row.get(metric)) for row in rows]
+        bars = axis.bar(
+            [position + offset for position in x_positions],
+            values,
+            width=width,
+            label=metric,
+        )
+        for bar, value in zip(bars, values, strict=True):
+            if value is None:
+                continue
+            axis.text(
+                bar.get_x() + bar.get_width() / 2,
+                value + 0.006,
+                f"{value:.3f}",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                rotation=90,
+            )
+
+    axis.set_title("Probe Q3 Comparison")
+    axis.set_ylabel("Q3 accuracy")
+    axis.set_xticks(x_positions)
+    axis.set_xticklabels(run_labels, rotation=20, ha="right")
+    axis.set_ylim(0, _comparison_ymax(rows, q3_metrics))
+    axis.grid(axis="y", alpha=0.25)
+    axis.legend(loc="best")
+    fig.tight_layout()
+
+    paths = [output_dir / "probe_comparison.png", output_dir / "probe_comparison.svg"]
+    for path in paths:
+        save_kwargs = {"dpi": 180} if path.suffix == ".png" else {}
+        fig.savefig(path, **save_kwargs)
+    plt.close(fig)
+    return paths
+
+
 def _comparison_columns(rows: list[dict[str, str]]) -> list[str]:
     columns = ["run"]
     for metric in COMPARISON_METRICS:
         if any(metric in row for row in rows):
             columns.append(metric)
     return columns
+
+
+def _short_run_label(run: str) -> str:
+    name = Path(run).name
+    if name.startswith("secondary_probe_"):
+        name = name.removeprefix("secondary_probe_")
+    label_map = {
+        "scratch": "scratch",
+        "jepa": "frozen JEPA",
+        "finetuned": "fine-tuned JEPA",
+    }
+    return label_map.get(name, name.replace("_", " "))
+
+
+def _run_sort_key(run: str) -> tuple[int, str]:
+    label = _short_run_label(run).lower()
+    if "scratch" in label:
+        return (0, label)
+    if "frozen" in label or label == "jepa":
+        return (1, label)
+    if "fine" in label or "finetun" in label:
+        return (2, label)
+    return (3, label)
+
+
+def _to_float(value: str | None) -> float | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _comparison_ymax(rows: list[dict[str, str]], metrics: list[str]) -> float:
+    values = [
+        value
+        for metric in metrics
+        for row in rows
+        for value in [_to_float(row.get(metric))]
+        if value is not None
+    ]
+    if not values:
+        return 1.0
+    return min(1.0, max(values) + 0.08)
 
 
 def _run_section(run_dir: Path, output_path: Path, *, config_name: str, label: str) -> list[str]:
