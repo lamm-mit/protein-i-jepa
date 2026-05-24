@@ -72,6 +72,52 @@ not ask the model to reconstruct the exact amino-acid sequence.
 This is why the model is JEPA-style: it learns by predicting missing information
 in representation space.
 
+## Why The Target Encoder Uses EMA
+
+The target encoder is not updated directly by the JEPA prediction loss. Instead,
+it is updated as an exponential moving average of the context encoder:
+
+```text
+target_weights =
+  ema_momentum * target_weights
+  + (1 - ema_momentum) * context_weights
+```
+
+The command-line flag is:
+
+```text
+--ema-momentum
+```
+
+For example, `--ema-momentum 0.996` means the target encoder changes slowly.
+
+This matters because the target encoder acts like a slowly updated teacher:
+
+```text
+student: masked sequence -> context encoder -> predictor
+teacher: full sequence   -> EMA target encoder
+loss:    student latents should match teacher latents
+```
+
+EMA helps because:
+
+- The target representation is more stable from step to step.
+- The predictor is not chasing a target that changes abruptly every gradient
+  update.
+- The target branch does not receive direct gradient from the same prediction
+  loss, which reduces shortcut behavior.
+- Together with the variance regularizer, it helps reduce representation
+  collapse.
+
+Lecture shorthand:
+
+```text
+The context encoder is the student.
+The EMA target encoder is a slowly updated teacher.
+The student sees a masked protein and tries to match the teacher's view of the
+full protein.
+```
+
 ## How To Use A Trained JEPA Model
 
 After pretraining, the JEPA model is usually used as an **encoder**, not as a
