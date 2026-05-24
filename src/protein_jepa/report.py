@@ -110,6 +110,20 @@ def build_report(
                     lines.extend([f"![probe_comparison]({_relative_link(png, output_path)})", ""])
                 if svg is not None:
                     lines.extend([f"[SVG version]({_relative_link(svg, output_path)})", ""])
+            win_paths = plot_probe_pairwise_wins(output_path.parent, comparison_rows)
+            if win_paths:
+                png = next((path for path in win_paths if path.suffix == ".png"), None)
+                svg = next((path for path in win_paths if path.suffix == ".svg"), None)
+                lines.extend(
+                    [
+                        "Pairwise Q3 win margins. Positive values mean the row run is better than the column run.",
+                        "",
+                    ]
+                )
+                if png is not None:
+                    lines.extend([f"![probe_pairwise_wins]({_relative_link(png, output_path)})", ""])
+                if svg is not None:
+                    lines.extend([f"[SVG version]({_relative_link(svg, output_path)})", ""])
         lines.extend(["## Probe Runs", ""])
         for run_dir in probe_dirs:
             lines.extend(_run_section(run_dir, output_path, config_name="probe_config.json", label="Probe"))
@@ -200,15 +214,8 @@ def plot_probe_comparison(output_dir: Path, rows: list[dict[str, str]]) -> list[
     q3_metrics = [metric for metric in COMPARISON_METRICS if metric.endswith("_q3") and any(metric in row for row in rows)]
     if not q3_metrics:
         return []
-    try:
-        plot_cache = output_dir / ".matplotlib"
-        plot_cache.mkdir(parents=True, exist_ok=True)
-        os.environ.setdefault("MPLCONFIGDIR", str(plot_cache))
-        import matplotlib
-
-        matplotlib.use("Agg")
-        from matplotlib import pyplot as plt
-    except ImportError:
+    plt = _load_pyplot(output_dir)
+    if plt is None:
         return []
 
     run_labels = [_short_run_label(row["run"]) for row in rows]
@@ -256,12 +263,55 @@ def plot_probe_comparison(output_dir: Path, rows: list[dict[str, str]]) -> list[
     return paths
 
 
+def plot_probe_pairwise_wins(output_dir: Path, rows: list[dict[str, str]]) -> list[Path]:
+    q3_metrics = [metric for metric in COMPARISON_METRICS if metric.endswith("_q3") and any(metric in row for row in rows)]
+    if len(rows) < 2 or not q3_metrics:
+        return []
+    plt = _load_pyplot(output_dir)
+    if plt is None:
+        return []
+
+    run_labels = [_short_run_label(row["run"]) for row in rows]
+    fig_width = max(4.8 * len(q3_metrics), 7.0)
+    fig, axes = plt.subplots(1, len(q3_metrics), figsize=(fig_width, 4.8), squeeze=False)
+    axes_row = list(axes[0])
+    for axis, metric in zip(axes_row, q3_metrics, strict=True):
+        matrix = _pairwise_margin_matrix(rows, metric)
+        max_abs = max((abs(value) for row in matrix for value in row), default=0.01)
+        max_abs = max(max_abs, 0.01)
+        image = axis.imshow(matrix, cmap="RdYlGn", vmin=-max_abs, vmax=max_abs)
+        axis.set_title(metric)
+        axis.set_xticks(range(len(run_labels)))
+        axis.set_xticklabels(run_labels, rotation=35, ha="right")
+        axis.set_yticks(range(len(run_labels)))
+        axis.set_yticklabels(run_labels)
+        for row_index, row in enumerate(matrix):
+            for col_index, value in enumerate(row):
+                color = "white" if abs(value) > max_abs * 0.55 else "black"
+                axis.text(col_index, row_index, f"{value:+.3f}", ha="center", va="center", fontsize=8, color=color)
+        fig.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
+
+    fig.suptitle("Pairwise Q3 Win Margins", y=1.02)
+    fig.tight_layout()
+    paths = [output_dir / "probe_pairwise_wins.png", output_dir / "probe_pairwise_wins.svg"]
+    for path in paths:
+        save_kwargs = {"dpi": 180} if path.suffix == ".png" else {}
+        fig.savefig(path, **save_kwargs)
+    plt.close(fig)
+    return paths
+
+
 def _comparison_columns(rows: list[dict[str, str]]) -> list[str]:
     columns = ["run"]
     for metric in COMPARISON_METRICS:
         if any(metric in row for row in rows):
             columns.append(metric)
     return columns
+
+
+def _pairwise_margin_matrix(rows: list[dict[str, str]], metric: str) -> list[list[float]]:
+    values = [_to_float(row.get(metric)) or 0.0 for row in rows]
+    return [[row_value - col_value for col_value in values] for row_value in values]
 
 
 def _short_run_label(run: str) -> str:
@@ -307,6 +357,20 @@ def _comparison_ymax(rows: list[dict[str, str]], metrics: list[str]) -> float:
     if not values:
         return 1.0
     return min(1.0, max(values) + 0.08)
+
+
+def _load_pyplot(output_dir: Path):
+    try:
+        plot_cache = output_dir / ".matplotlib"
+        plot_cache.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("MPLCONFIGDIR", str(plot_cache))
+        import matplotlib
+
+        matplotlib.use("Agg")
+        from matplotlib import pyplot as plt
+        return plt
+    except ImportError:
+        return None
 
 
 def _run_section(run_dir: Path, output_path: Path, *, config_name: str, label: str) -> list[str]:

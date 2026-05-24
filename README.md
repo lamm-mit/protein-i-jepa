@@ -383,8 +383,11 @@ graphics in slides and documents. It also prints and saves a probe-comparison
 table across all `--probe-dir` runs, including `val_q3` and any external test
 metrics such as `test_cb513_q3`, `test_ts115_q3`, and `test_casp12_q3`. The
 report directory also gets `probe_comparison.png` and `probe_comparison.svg`,
-which are embedded/linked from the report. The comparison is ordered as
+plus `probe_pairwise_wins.png` and `probe_pairwise_wins.svg`, which are
+embedded/linked from the report. The comparison is ordered as
 `scratch -> frozen JEPA -> fine-tuned JEPA` when those run names are present.
+The pairwise win plot shows Q3 margins for every run against every other run;
+positive values mean the row run beat the column run.
 
 ![alt text](assets/probe_comparison.png)
 
@@ -781,7 +784,8 @@ When you pass multiple probe directories to `scripts/make_training_report.py`,
 the report starts with a `Probe Comparison` table and prints the same table in
 the terminal. This is where the scratch baseline, frozen JEPA probe, and
 fine-tuned JEPA probe are compared directly. It also writes
-`probe_comparison.png` and `probe_comparison.svg` next to the report.
+`probe_comparison.png`, `probe_comparison.svg`, `probe_pairwise_wins.png`, and
+`probe_pairwise_wins.svg` next to the report.
 
 The logged probe metrics include:
 
