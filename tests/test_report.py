@@ -12,6 +12,7 @@ from protein_jepa.report import (
     build_report,
     main,
     plot_probe_comparison,
+    plot_probe_aggregate_performance,
     plot_probe_pairwise_wins,
     probe_comparison_rows,
     probe_comparison_text,
@@ -39,12 +40,18 @@ class ReportTests(unittest.TestCase):
 
             (probe / "probe_config.json").write_text(json.dumps({"steps": 5}), encoding="utf-8")
             (probe / "metrics.jsonl").write_text(json.dumps({"step": 5, "val_q3": 0.7}) + "\n", encoding="utf-8")
-            (probe / "test_metrics.json").write_text(json.dumps({"test_cb513_q3": 0.6}), encoding="utf-8")
+            (probe / "test_metrics.json").write_text(
+                json.dumps({"test_cb513_q3": 0.6, "test_cb513_loss": 0.8}),
+                encoding="utf-8",
+            )
             (probe / "probe_curves.png").write_bytes(b"png")
 
             (scratch / "probe_config.json").write_text(json.dumps({"steps": 5}), encoding="utf-8")
             (scratch / "metrics.jsonl").write_text(json.dumps({"step": 5, "val_q3": 0.4}) + "\n", encoding="utf-8")
-            (scratch / "test_metrics.json").write_text(json.dumps({"test_cb513_q3": 0.35}), encoding="utf-8")
+            (scratch / "test_metrics.json").write_text(
+                json.dumps({"test_cb513_q3": 0.35, "test_cb513_loss": 1.1}),
+                encoding="utf-8",
+            )
 
             output = build_report(
                 output=root / "reports" / "report.md",
@@ -63,6 +70,10 @@ class ReportTests(unittest.TestCase):
             self.assertIn("probe_comparison.svg", text)
             self.assertIn("probe_pairwise_wins.png", text)
             self.assertIn("probe_pairwise_wins.svg", text)
+            self.assertIn("probe_average_q3.png", text)
+            self.assertIn("probe_average_q3.svg", text)
+            self.assertIn("probe_average_loss.png", text)
+            self.assertIn("probe_average_loss.svg", text)
             self.assertIn("`val_q3`", text)
             self.assertIn("`test_cb513_q3`", text)
             self.assertIn(str(scratch), text)
@@ -72,10 +83,18 @@ class ReportTests(unittest.TestCase):
             self.assertTrue((output.parent / "probe_comparison.svg").exists())
             self.assertTrue((output.parent / "probe_pairwise_wins.png").exists())
             self.assertTrue((output.parent / "probe_pairwise_wins.svg").exists())
+            self.assertTrue((output.parent / "probe_average_q3.png").exists())
+            self.assertTrue((output.parent / "probe_average_q3.svg").exists())
+            self.assertTrue((output.parent / "probe_average_loss.png").exists())
+            self.assertTrue((output.parent / "probe_average_loss.svg").exists())
             self.assertGreater((output.parent / "probe_comparison.png").stat().st_size, 0)
             self.assertGreater((output.parent / "probe_comparison.svg").stat().st_size, 0)
             self.assertGreater((output.parent / "probe_pairwise_wins.png").stat().st_size, 0)
             self.assertGreater((output.parent / "probe_pairwise_wins.svg").stat().st_size, 0)
+            self.assertGreater((output.parent / "probe_average_q3.png").stat().st_size, 0)
+            self.assertGreater((output.parent / "probe_average_q3.svg").stat().st_size, 0)
+            self.assertGreater((output.parent / "probe_average_loss.png").stat().st_size, 0)
+            self.assertGreater((output.parent / "probe_average_loss.svg").stat().st_size, 0)
 
     def test_probe_comparison_text_formats_rows(self):
         table = probe_comparison_text(
@@ -135,6 +154,41 @@ class ReportTests(unittest.TestCase):
                 ],
             )
             self.assertEqual({path.suffix for path in paths}, {".png", ".svg"})
+            for path in paths:
+                self.assertTrue(path.exists())
+                self.assertGreater(path.stat().st_size, 0)
+
+    def test_plot_probe_aggregate_performance_writes_q3_and_loss(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = plot_probe_aggregate_performance(
+                Path(tmpdir),
+                [
+                    {
+                        "run": "runs/secondary_probe_scratch",
+                        "test_cb513_q3": "0.4",
+                        "test_ts115_q3": "0.5",
+                        "test_cb513_loss": "1.2",
+                        "test_ts115_loss": "1.0",
+                    },
+                    {
+                        "run": "runs/secondary_probe_jepa",
+                        "test_cb513_q3": "0.6",
+                        "test_ts115_q3": "0.7",
+                        "test_cb513_loss": "0.9",
+                        "test_ts115_loss": "0.8",
+                    },
+                ],
+            )
+            names = {path.name for path in paths}
+            self.assertEqual(
+                names,
+                {
+                    "probe_average_q3.png",
+                    "probe_average_q3.svg",
+                    "probe_average_loss.png",
+                    "probe_average_loss.svg",
+                },
+            )
             for path in paths:
                 self.assertTrue(path.exists())
                 self.assertGreater(path.stat().st_size, 0)

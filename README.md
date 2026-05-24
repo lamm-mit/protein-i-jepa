@@ -384,12 +384,16 @@ table across all `--probe-dir` runs, including `val_q3` and any external test
 metrics such as `test_cb513_q3`, `test_ts115_q3`, and `test_casp12_q3`. The
 report directory also gets `probe_comparison.png` and `probe_comparison.svg`,
 plus `probe_pairwise_wins.png` and `probe_pairwise_wins.svg`, which are
-embedded/linked from the report. The comparison is ordered as
-`scratch -> frozen JEPA -> fine-tuned JEPA` when those run names are present.
-The pairwise win plot shows Q3 margins for every run against every other run;
-positive values mean the row run beat the column run.
+embedded/linked from the report. It also writes `probe_average_q3.png/svg` and
+`probe_average_loss.png/svg` to summarize average external-test performance.
+The comparison is ordered as `scratch -> frozen JEPA -> fine-tuned JEPA` when
+those run names are present. The pairwise win plot shows Q3 margins for every
+run against every other run; positive values mean the row run beat the column
+run.
 
 ![alt text](assets/probe_comparison.png)
+![](assets/probe_pairwise_wins.svg)
+![alt text](assets/probe_average_q3.svg)
 
 If you do not have a labeled secondary-structure dataset yet, run the complete
 synthetic smoke workflow instead:
@@ -785,7 +789,9 @@ the report starts with a `Probe Comparison` table and prints the same table in
 the terminal. This is where the scratch baseline, frozen JEPA probe, and
 fine-tuned JEPA probe are compared directly. It also writes
 `probe_comparison.png`, `probe_comparison.svg`, `probe_pairwise_wins.png`, and
-`probe_pairwise_wins.svg` next to the report.
+`probe_pairwise_wins.svg` next to the report. Two aggregate plots,
+`probe_average_q3.png/svg` and `probe_average_loss.png/svg`, summarize mean
+performance across the external test splits.
 
 The logged probe metrics include:
 

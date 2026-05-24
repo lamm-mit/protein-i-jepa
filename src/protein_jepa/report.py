@@ -63,6 +63,9 @@ COMPARISON_METRICS = (
     "test_casp14_fm_loss",
 )
 
+TEST_Q3_METRICS = tuple(metric for metric in COMPARISON_METRICS if metric.startswith("test_") and metric.endswith("_q3"))
+TEST_LOSS_METRICS = tuple(metric for metric in COMPARISON_METRICS if metric.startswith("test_") and metric.endswith("_loss"))
+
 
 def build_report(
     *,
@@ -124,6 +127,24 @@ def build_report(
                     lines.extend([f"![probe_pairwise_wins]({_relative_link(png, output_path)})", ""])
                 if svg is not None:
                     lines.extend([f"[SVG version]({_relative_link(svg, output_path)})", ""])
+            aggregate_paths = plot_probe_aggregate_performance(output_path.parent, comparison_rows)
+            if aggregate_paths:
+                lines.extend(
+                    [
+                        "Average external-test performance across available test splits.",
+                        "",
+                    ]
+                )
+                for stem, description in [
+                    ("probe_average_q3", "Average external-test Q3"),
+                    ("probe_average_loss", "Average external-test loss"),
+                ]:
+                    png = next((path for path in aggregate_paths if path.stem == stem and path.suffix == ".png"), None)
+                    svg = next((path for path in aggregate_paths if path.stem == stem and path.suffix == ".svg"), None)
+                    if png is not None:
+                        lines.extend([f"![{stem}]({_relative_link(png, output_path)})", ""])
+                    if svg is not None:
+                        lines.extend([f"[{description} SVG]({_relative_link(svg, output_path)})", ""])
         lines.extend(["## Probe Runs", ""])
         for run_dir in probe_dirs:
             lines.extend(_run_section(run_dir, output_path, config_name="probe_config.json", label="Probe"))
@@ -301,6 +322,85 @@ def plot_probe_pairwise_wins(output_dir: Path, rows: list[dict[str, str]]) -> li
     return paths
 
 
+def plot_probe_aggregate_performance(output_dir: Path, rows: list[dict[str, str]]) -> list[Path]:
+    paths: list[Path] = []
+    paths.extend(
+        _plot_probe_average_metric(
+            output_dir,
+            rows,
+            metrics=TEST_Q3_METRICS,
+            stem="probe_average_q3",
+            title="Average External-Test Q3",
+            ylabel="Mean Q3 accuracy",
+            higher_is_better=True,
+        )
+    )
+    paths.extend(
+        _plot_probe_average_metric(
+            output_dir,
+            rows,
+            metrics=TEST_LOSS_METRICS,
+            stem="probe_average_loss",
+            title="Average External-Test Loss",
+            ylabel="Mean loss",
+            higher_is_better=False,
+        )
+    )
+    return paths
+
+
+def _plot_probe_average_metric(
+    output_dir: Path,
+    rows: list[dict[str, str]],
+    *,
+    metrics: tuple[str, ...],
+    stem: str,
+    title: str,
+    ylabel: str,
+    higher_is_better: bool,
+) -> list[Path]:
+    available_metrics = [metric for metric in metrics if any(metric in row for row in rows)]
+    if not available_metrics:
+        return []
+    plt = _load_pyplot(output_dir)
+    if plt is None:
+        return []
+
+    run_labels = [_short_run_label(row["run"]) for row in rows]
+    averages = [_mean_available(row, available_metrics) for row in rows]
+    fig, axis = plt.subplots(figsize=(max(6.5, 1.7 * len(rows)), 4.6))
+    colors = ["#6b7280", "#2563eb", "#16a34a", "#9333ea", "#ea580c"][: len(rows)]
+    bars = axis.bar(run_labels, averages, color=colors)
+    for bar, value in zip(bars, averages, strict=True):
+        axis.text(
+            bar.get_x() + bar.get_width() / 2,
+            value + (0.006 if higher_is_better else max(averages) * 0.01),
+            f"{value:.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
+    axis.set_title(title)
+    axis.set_ylabel(ylabel)
+    axis.set_xticks(range(len(run_labels)))
+    axis.set_xticklabels(run_labels, rotation=20, ha="right")
+    if higher_is_better:
+        axis.set_ylim(0, min(1.0, max(averages) + 0.08))
+    else:
+        axis.set_ylim(0, max(averages) * 1.15)
+    axis.grid(axis="y", alpha=0.25)
+    subtitle = ", ".join(metric.replace("test_", "").removesuffix("_q3").removesuffix("_loss") for metric in available_metrics)
+    axis.text(0.5, -0.28, f"Average over: {subtitle}", ha="center", va="top", transform=axis.transAxes, fontsize=9)
+    fig.tight_layout()
+
+    plot_paths = [output_dir / f"{stem}.png", output_dir / f"{stem}.svg"]
+    for path in plot_paths:
+        save_kwargs = {"dpi": 180} if path.suffix == ".png" else {}
+        fig.savefig(path, **save_kwargs)
+    plt.close(fig)
+    return plot_paths
+
+
 def _comparison_columns(rows: list[dict[str, str]]) -> list[str]:
     columns = ["run"]
     for metric in COMPARISON_METRICS:
@@ -357,6 +457,18 @@ def _comparison_ymax(rows: list[dict[str, str]], metrics: list[str]) -> float:
     if not values:
         return 1.0
     return min(1.0, max(values) + 0.08)
+
+
+def _mean_available(row: dict[str, str], metrics: list[str]) -> float:
+    values = [
+        value
+        for metric in metrics
+        for value in [_to_float(row.get(metric))]
+        if value is not None
+    ]
+    if not values:
+        return 0.0
+    return float(sum(values) / len(values))
 
 
 def _load_pyplot(output_dir: Path):
