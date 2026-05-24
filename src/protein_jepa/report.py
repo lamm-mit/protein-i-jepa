@@ -39,6 +39,14 @@ IMPORTANT_CONFIG = (
     "max_span",
     "checkpoint",
     "labels_tsv",
+    "train_labels_tsv",
+    "val_labels_tsv",
+    "test_labels_tsv",
+    "hf_dataset",
+    "hf_split",
+    "hf_train_split",
+    "hf_val_split",
+    "hf_test_splits",
     "freeze_encoder",
 )
 
@@ -115,11 +123,14 @@ def _run_section(run_dir: Path, output_path: Path, *, config_name: str, label: s
     config = _read_json(run_dir / config_name)
     metrics = _read_metrics(run_dir)
     final_metrics = metrics[-1] if metrics else {}
+    test_metrics = _read_json(run_dir / "test_metrics.json")
 
     if config:
         lines.extend(["Configuration:", "", _table(_ordered_items(config, IMPORTANT_CONFIG)), ""])
     if final_metrics:
         lines.extend(["Final metrics:", "", _table(_ordered_items(final_metrics, IMPORTANT_METRICS)), ""])
+    if test_metrics:
+        lines.extend(["External test metrics:", "", _table(_ordered_items(test_metrics, ())), ""])
 
     figure_lines = _figure_lines(run_dir, output_path)
     if figure_lines:

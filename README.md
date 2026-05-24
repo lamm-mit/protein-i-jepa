@@ -42,12 +42,13 @@ in representation space.
 
 ## What This Code Does
 
-The code supports two workflows:
+The code supports three workflows:
 
 1. Self-supervised JEPA pretraining on unlabeled protein sequences.
 2. Downstream probing to test whether the learned encoder contains biological
    information.
-3. Dataset conversion helpers for creating the probe TSV.
+3. Dataset conversion helpers for creating professional secondary-structure
+   probe splits.
 
 The main entry point is:
 
@@ -67,6 +68,10 @@ Reusable package code lives in `src/protein_jepa/`:
 - `visualize.py`: predicted-vs-target latent embedding plots.
 - `report.py`: Markdown report generation from saved run directories.
 - `download_secondary.py`: download/convert secondary-structure labels to TSV.
+- `download_netsurfp.py`: download/convert NetSurfP train/validation/test splits
+  to TSV.
+- `publish_hf_secondary.py`: stage and upload NetSurfP probe splits to a
+  Hugging Face dataset repo.
 
 Tests live in `tests/`.
 
@@ -78,21 +83,21 @@ The local environment already has PyTorch. To run the unit and smoke tests:
 python -m unittest discover -s tests
 ```
 
-For Hugging Face datasets, install the optional dependency if needed:
+For Hugging Face datasets and dataset publishing, install the optional
+dependencies if needed:
 
 ```bash
-python -m pip install datasets
+python -m pip install datasets huggingface_hub
 ```
 
 ## End-To-End Runbook
 
 This is the full command sequence for a real run: train JEPA on UniRef50,
-train secondary-structure probes, then build one Markdown report containing the
-metrics and figures.
+prepare professional secondary-structure splits, train probes, evaluate external
+tests, and build one Markdown report containing the metrics and figures.
 
-This workflow downloads a small labeled secondary-structure dataset to
-`data/secondary_structure.tsv`, trains JEPA, trains probes, and writes one
-report.
+This workflow writes NetSurfP-derived TSV files under `data/netsurfp/`, trains
+JEPA, trains probes, evaluates CB513/TS115/CASP12, and writes one report.
 
 1. Confirm the code works:
 
@@ -100,18 +105,43 @@ report.
 python -m unittest discover -s tests
 ```
 
-2. Download and convert a secondary-structure probe dataset:
+2. Download and convert the NetSurfP-3.0 secondary-structure splits:
 
 ```bash
-python scripts/download_secondary_structure.py \
-  --output data/secondary_structure.tsv
+python scripts/download_netsurfp.py \
+  --output-dir data/netsurfp
 ```
 
-The default source is `lamm-mit/protein-secondary-structure-nppe2` from
-Hugging Face. It provides protein sequences in `seq` and per-residue secondary
-structure labels in `sst3` and `sst8`.
+This uses the official NetSurfP-3.0 dataset page by default:
+<https://services.healthtech.dtu.dk/services/NetSurfP-3.0/5-Dataset.php>.
+It creates:
 
-3. Pretrain Protein-I-JEPA on a bounded UniRef50 sample:
+- `data/netsurfp/train.tsv`: train the probe.
+- `data/netsurfp/validation.tsv`: tune the probe.
+- `data/netsurfp/cb513.tsv`: final external test.
+- `data/netsurfp/ts115.tsv`: final external test.
+- `data/netsurfp/casp12.tsv`: final external test.
+
+If you have a CASP14_FM file, add it with `--casp14-fm-npz path/to/file.npz` or
+`--casp14-fm-tsv path/to/file.tsv`; it will be written as
+`data/netsurfp/casp14_fm.tsv`.
+
+3. Optionally publish the NetSurfP splits to Hugging Face:
+
+```bash
+huggingface-cli login
+
+python scripts/publish_netsurfp_to_hf.py \
+  --repo-id lamm-mit/protein-secondary-structure-netsurfp \
+  --output-dir data/netsurfp \
+  --staging-dir data/netsurfp_hf
+```
+
+Use `--dry-run` first if you want to verify the staged JSONL/TSV files without
+uploading. The uploaded repo contains JSONL files for direct Hugging Face use
+and TSV copies under `tsv/`.
+
+4. Pretrain Protein-I-JEPA on a bounded UniRef50 sample:
 
 ```bash
 python scripts/train_protein_jepa.py pretrain \
@@ -124,12 +154,18 @@ python scripts/train_protein_jepa.py pretrain \
   --output-dir runs/uniref50_jepa
 ```
 
-4. Train a frozen secondary-structure probe on the JEPA encoder:
+5. Train a frozen secondary-structure probe on the JEPA encoder.
+
+Local TSV version:
 
 ```bash
 python scripts/train_protein_jepa.py probe-secondary \
   --checkpoint runs/uniref50_jepa/protein_jepa.pt \
-  --labels-tsv data/secondary_structure.tsv \
+  --train-labels-tsv data/netsurfp/train.tsv \
+  --val-labels-tsv data/netsurfp/validation.tsv \
+  --test-labels-tsv data/netsurfp/cb513.tsv \
+  --test-labels-tsv data/netsurfp/ts115.tsv \
+  --test-labels-tsv data/netsurfp/casp12.tsv \
   --steps 500 \
   --batch-size 32 \
   --max-length 256 \
@@ -137,11 +173,33 @@ python scripts/train_protein_jepa.py probe-secondary \
   --output-dir runs/secondary_probe_jepa
 ```
 
-5. Train a scratch probe baseline with no JEPA checkpoint:
+Hugging Face version after publishing:
 
 ```bash
 python scripts/train_protein_jepa.py probe-secondary \
-  --labels-tsv data/secondary_structure.tsv \
+  --checkpoint runs/uniref50_jepa/protein_jepa.pt \
+  --hf-dataset lamm-mit/protein-secondary-structure-netsurfp \
+  --hf-train-split train \
+  --hf-val-split validation \
+  --hf-test-split cb513 \
+  --hf-test-split ts115 \
+  --hf-test-split casp12 \
+  --steps 500 \
+  --batch-size 32 \
+  --max-length 256 \
+  --device auto \
+  --output-dir runs/secondary_probe_jepa
+```
+
+6. Train a scratch probe baseline with no JEPA checkpoint:
+
+```bash
+python scripts/train_protein_jepa.py probe-secondary \
+  --train-labels-tsv data/netsurfp/train.tsv \
+  --val-labels-tsv data/netsurfp/validation.tsv \
+  --test-labels-tsv data/netsurfp/cb513.tsv \
+  --test-labels-tsv data/netsurfp/ts115.tsv \
+  --test-labels-tsv data/netsurfp/casp12.tsv \
   --steps 500 \
   --batch-size 32 \
   --max-length 256 \
@@ -149,12 +207,16 @@ python scripts/train_protein_jepa.py probe-secondary \
   --output-dir runs/secondary_probe_scratch
 ```
 
-6. Optionally fine-tune the JEPA encoder during probing:
+7. Optionally fine-tune the JEPA encoder during probing:
 
 ```bash
 python scripts/train_protein_jepa.py probe-secondary \
   --checkpoint runs/uniref50_jepa/protein_jepa.pt \
-  --labels-tsv data/secondary_structure.tsv \
+  --train-labels-tsv data/netsurfp/train.tsv \
+  --val-labels-tsv data/netsurfp/validation.tsv \
+  --test-labels-tsv data/netsurfp/cb513.tsv \
+  --test-labels-tsv data/netsurfp/ts115.tsv \
+  --test-labels-tsv data/netsurfp/casp12.tsv \
   --unfreeze-encoder \
   --steps 500 \
   --batch-size 32 \
@@ -163,7 +225,7 @@ python scripts/train_protein_jepa.py probe-secondary \
   --output-dir runs/secondary_probe_finetuned
 ```
 
-7. Plot predicted versus target JEPA latents in 2D:
+8. Plot predicted versus target JEPA latents in 2D:
 
 ```bash
 python scripts/train_protein_jepa.py plot-embeddings \
@@ -179,7 +241,7 @@ python scripts/train_protein_jepa.py plot-embeddings \
 This writes `embedding_predicted_vs_target.png` and
 `embedding_predicted_vs_target.svg`.
 
-8. Build a report that embeds all generated figures:
+9. Build a report that embeds all generated figures:
 
 ```bash
 python scripts/make_training_report.py \
@@ -417,39 +479,82 @@ or DSSP-style Q8:
 
 Q8 labels are automatically mapped to Q3.
 
-Create this file from the default Hugging Face dataset:
+The special label `.` means "ignore this residue for the supervised loss and
+accuracy." The NetSurfP converter uses this to respect external-test evaluation
+masks while preserving the full sequence context.
+
+For a serious probe workflow, create explicit train, validation, and external
+test TSV files from NetSurfP-3.0:
 
 ```bash
-python scripts/download_secondary_structure.py \
-  --output data/secondary_structure.tsv
+python scripts/download_netsurfp.py \
+  --output-dir data/netsurfp
 ```
 
-Or explicitly choose fields:
+The resulting split policy is:
+
+- `data/netsurfp/train.tsv`: train the supervised probe.
+- `data/netsurfp/validation.tsv`: tune probe settings and pick checkpoints.
+- `data/netsurfp/cb513.tsv`: final external test.
+- `data/netsurfp/ts115.tsv`: final external test.
+- `data/netsurfp/casp12.tsv`: final external test.
+- `data/netsurfp/casp14_fm.tsv`: optional final external test if you provide
+  `--casp14-fm-npz` or `--casp14-fm-tsv`.
+
+You can also stage and upload those splits into the `lamm-mit` Hugging Face
+account:
 
 ```bash
-python scripts/download_secondary_structure.py \
-  --hf-dataset lamm-mit/protein-secondary-structure-nppe2 \
-  --split train \
-  --sequence-field seq \
-  --label-field sst3 \
-  --output data/secondary_structure.tsv
+huggingface-cli login
+
+python scripts/publish_netsurfp_to_hf.py \
+  --repo-id lamm-mit/protein-secondary-structure-netsurfp \
+  --output-dir data/netsurfp \
+  --staging-dir data/netsurfp_hf
 ```
 
-Train a probe from a JEPA checkpoint:
+That command downloads/converts NetSurfP, writes upload-ready JSONL files, keeps
+TSV copies, creates a dataset card, and uploads the folder through the Hugging
+Face Hub API. Use `--dry-run` to do everything except the upload.
+
+Train a frozen probe from a JEPA checkpoint and evaluate the external tests:
 
 ```bash
 python scripts/train_protein_jepa.py probe-secondary \
   --checkpoint runs/uniref50_jepa/protein_jepa.pt \
-  --labels-tsv data/secondary_structure.tsv \
+  --train-labels-tsv data/netsurfp/train.tsv \
+  --val-labels-tsv data/netsurfp/validation.tsv \
+  --test-labels-tsv data/netsurfp/cb513.tsv \
+  --test-labels-tsv data/netsurfp/ts115.tsv \
+  --test-labels-tsv data/netsurfp/casp12.tsv \
   --steps 500 \
   --output-dir runs/secondary_probe_jepa
 ```
 
-Train a scratch baseline with the same probe code but no JEPA checkpoint:
+Or train the same probe from the uploaded Hugging Face dataset:
 
 ```bash
 python scripts/train_protein_jepa.py probe-secondary \
-  --labels-tsv data/secondary_structure.tsv \
+  --checkpoint runs/uniref50_jepa/protein_jepa.pt \
+  --hf-dataset lamm-mit/protein-secondary-structure-netsurfp \
+  --hf-train-split train \
+  --hf-val-split validation \
+  --hf-test-split cb513 \
+  --hf-test-split ts115 \
+  --hf-test-split casp12 \
+  --steps 500 \
+  --output-dir runs/secondary_probe_jepa
+```
+
+Train a scratch baseline with the same explicit splits:
+
+```bash
+python scripts/train_protein_jepa.py probe-secondary \
+  --train-labels-tsv data/netsurfp/train.tsv \
+  --val-labels-tsv data/netsurfp/validation.tsv \
+  --test-labels-tsv data/netsurfp/cb513.tsv \
+  --test-labels-tsv data/netsurfp/ts115.tsv \
+  --test-labels-tsv data/netsurfp/casp12.tsv \
   --steps 500 \
   --output-dir runs/secondary_probe_scratch
 ```
@@ -459,10 +564,27 @@ Fine-tune the encoder instead of freezing it:
 ```bash
 python scripts/train_protein_jepa.py probe-secondary \
   --checkpoint runs/uniref50_jepa/protein_jepa.pt \
-  --labels-tsv data/secondary_structure.tsv \
+  --train-labels-tsv data/netsurfp/train.tsv \
+  --val-labels-tsv data/netsurfp/validation.tsv \
+  --test-labels-tsv data/netsurfp/cb513.tsv \
+  --test-labels-tsv data/netsurfp/ts115.tsv \
+  --test-labels-tsv data/netsurfp/casp12.tsv \
   --unfreeze-encoder \
   --steps 500 \
   --output-dir runs/secondary_probe_finetuned
+```
+
+The original simple dataset remains supported. For quick demos, the single-file
+mode randomly splits one TSV into train and validation:
+
+```bash
+python scripts/download_secondary_structure.py \
+  --output data/secondary_structure.tsv
+
+python scripts/train_protein_jepa.py probe-secondary \
+  --labels-tsv data/secondary_structure.tsv \
+  --steps 500 \
+  --output-dir runs/secondary_probe_quick
 ```
 
 Run a synthetic probe smoke test:
@@ -485,6 +607,8 @@ Each probe run writes:
 - `secondary_probe.pt`: probe checkpoint.
 - `metrics.jsonl`: one JSON object per logging step.
 - `metrics.csv`: spreadsheet-friendly probe metrics.
+- `test_metrics.json`: external test metrics, if `--test-labels-tsv` or
+  `--hf-test-split` was used.
 - `probe_curves.png`: raster plot.
 - `probe_curves.svg`: vector plot.
 
@@ -494,11 +618,15 @@ The logged probe metrics include:
 - `val_loss`: held-out supervised cross-entropy.
 - `train_q3`: per-residue Q3 accuracy on the training batch.
 - `val_q3`: per-residue Q3 accuracy on validation batches.
+- `test_cb513_q3`, `test_ts115_q3`, `test_casp12_q3`: final external-test Q3
+  accuracy when those test splits are provided.
 
 What the probe tells us:
 
 - If JEPA + frozen probe beats a scratch frozen encoder, the JEPA pretraining
   learned sequence features that help secondary-structure prediction.
+- NetSurfP validation is for tuning. CB513, TS115, CASP12, and optional
+  CASP14_FM should be treated as final external tests.
 - If JEPA helps most when labeled data is scarce, it is improving label
   efficiency.
 - If fine-tuning helps much more than frozen probing, the representation may be
@@ -519,6 +647,9 @@ The repository currently includes:
 - Latent cosine similarity on train and validation batches.
 - Predicted and target latent standard deviation diagnostics for collapse.
 - Q3 secondary-structure probing with frozen or fine-tuned encoders.
+- Explicit NetSurfP train/validation split probing.
+- External test evaluation on CB513, TS115, CASP12, and optional CASP14_FM from
+  local TSVs or Hugging Face splits.
 - Synthetic smoke tests for pretraining and probing.
 
 ## Good Next Validation Tasks
@@ -533,6 +664,6 @@ These are not implemented yet, but they are natural extensions:
 - Masked-token baseline: train an MLM on the same sequence sample and compare
   downstream probes against JEPA.
 
-For serious scientific evaluation, use homology-aware splits. Random splits can
-overestimate performance because related proteins may appear in both training
-and validation sets.
+For serious scientific evaluation, prefer curated or homology-aware external
+tests. Random single-TSV splits can overestimate performance because related
+proteins may appear in both training and validation sets.

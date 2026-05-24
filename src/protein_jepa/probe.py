@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
 import random
@@ -19,6 +19,7 @@ from protein_jepa.train import TrainConfig, _resolve_device, _set_seed
 
 Q3_LABELS = ("C", "E", "H")
 Q3_TO_ID = {label: i for i, label in enumerate(Q3_LABELS)}
+IGNORE_LABELS = {".", "?", "X"}
 Q8_TO_Q3 = {
     "H": "H",
     "G": "H",
@@ -52,9 +53,10 @@ class SecondaryStructureDataset(Dataset):
         self.rows: list[tuple[str, str]] = []
         for sequence, labels in rows:
             sequence = self.alphabet.clean(sequence)
-            q3_labels = "".join(map_q8_to_q3(label) for label in labels.strip().upper())
+            q3_labels = "".join(map_secondary_label(label) for label in labels.strip().upper())
             usable = min(len(sequence), len(q3_labels), max_length)
-            if usable >= min_length:
+            valid_labels = sum(label != "." for label in q3_labels[:usable])
+            if usable >= min_length and valid_labels > 0:
                 self.rows.append((sequence[:usable], q3_labels[:usable]))
         if not self.rows:
             raise ValueError("No labeled sequences remained after filtering.")
@@ -65,7 +67,10 @@ class SecondaryStructureDataset(Dataset):
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         sequence, labels = self.rows[index]
         input_ids = torch.tensor(self.alphabet.encode(sequence, max_length=self.max_length), dtype=torch.long)
-        label_ids = torch.tensor([Q3_TO_ID[label] for label in labels[: self.max_length]], dtype=torch.long)
+        label_ids = torch.tensor(
+            [IGNORE_INDEX if label == "." else Q3_TO_ID[label] for label in labels[: self.max_length]],
+            dtype=torch.long,
+        )
         return input_ids, label_ids
 
 
@@ -73,6 +78,18 @@ class SecondaryStructureDataset(Dataset):
 class ProbeConfig:
     checkpoint: str | None = None
     labels_tsv: str | None = None
+    train_labels_tsv: str | None = None
+    val_labels_tsv: str | None = None
+    test_labels_tsv: list[str] = field(default_factory=list)
+    hf_dataset: str | None = None
+    hf_split: str = "train"
+    hf_train_split: str | None = None
+    hf_val_split: str | None = None
+    hf_test_splits: list[str] = field(default_factory=list)
+    hf_sequence_field: str = "sequence"
+    hf_label_field: str = "labels"
+    hf_streaming: bool = False
+    hf_max_samples: int | None = None
     synthetic: bool = False
     output_dir: str = "runs/secondary_probe"
     synthetic_sequences: int = 256
@@ -81,6 +98,7 @@ class ProbeConfig:
     batch_size: int = 16
     steps: int = 100
     eval_batches: int = 4
+    test_eval_batches: int | None = None
     log_interval: int = 10
     seed: int = 0
     lr: float = 1e-3
@@ -112,14 +130,22 @@ def train_secondary_probe(config: ProbeConfig) -> dict[str, float | str]:
     (output_dir / "probe_config.json").write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
 
     alphabet = ProteinAlphabet()
-    dataset = _build_probe_dataset(config, alphabet)
-    train_dataset, val_dataset = _split_dataset(dataset, seed=config.seed)
+    train_dataset, val_dataset, test_datasets = _build_probe_splits(config, alphabet)
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.batch_size,
         shuffle=True,
         collate_fn=lambda rows: collate_labeled_sequences(rows, pad_id=alphabet.pad_id),
     )
+    test_loaders = {
+        name: DataLoader(
+            dataset,
+            batch_size=config.batch_size,
+            shuffle=False,
+            collate_fn=lambda rows: collate_labeled_sequences(rows, pad_id=alphabet.pad_id),
+        )
+        for name, dataset in test_datasets.items()
+    }
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.batch_size,
@@ -144,13 +170,29 @@ def train_secondary_probe(config: ProbeConfig) -> dict[str, float | str]:
         batch = next(train_iter)
         metrics = _probe_train_step(model, optimizer, batch, device)
         if step % config.log_interval == 0 or step == 1 or step == config.steps:
-            val_metrics = evaluate_secondary_probe(model, val_loader, config, device)
+            val_metrics = evaluate_secondary_probe(model, val_loader, device, max_batches=config.eval_batches, prefix="val")
             metrics.update(val_metrics)
             metrics["step"] = float(step)
             print(json.dumps({key: round(value, 6) for key, value in metrics.items()}), flush=True)
             last_metrics = {key: float(value) for key, value in metrics.items()}
             record_metrics(output_dir, last_metrics)
             plot_probe_metrics(output_dir, load_metrics(output_dir))
+
+    test_metrics: dict[str, float] = {}
+    for name, loader in test_loaders.items():
+        test_metrics.update(
+            evaluate_secondary_probe(
+                model,
+                loader,
+                device,
+                max_batches=config.test_eval_batches,
+                prefix=f"test_{name}",
+            )
+        )
+    if test_metrics:
+        last_metrics.update(test_metrics)
+        (output_dir / "test_metrics.json").write_text(json.dumps(test_metrics, indent=2, sort_keys=True), encoding="utf-8")
+        print(json.dumps({key: round(value, 6) for key, value in test_metrics.items()}), flush=True)
 
     checkpoint_path = output_dir / "secondary_probe.pt"
     torch.save(
@@ -167,6 +209,7 @@ def train_secondary_probe(config: ProbeConfig) -> dict[str, float | str]:
         "checkpoint": str(checkpoint_path),
         "metrics_jsonl": str(output_dir / "metrics.jsonl"),
         "metrics_csv": str(output_dir / "metrics.csv"),
+        "test_metrics": str(output_dir / "test_metrics.json") if test_metrics else "",
         "plot_png": str(output_dir / "probe_curves.png"),
         "plot_svg": str(output_dir / "probe_curves.svg"),
     }
@@ -177,8 +220,10 @@ def train_secondary_probe(config: ProbeConfig) -> dict[str, float | str]:
 def evaluate_secondary_probe(
     model: SecondaryStructureProbe,
     loader: DataLoader,
-    config: ProbeConfig,
     device: torch.device,
+    *,
+    max_batches: int | None,
+    prefix: str,
 ) -> dict[str, float]:
     model.eval()
     losses = []
@@ -186,7 +231,7 @@ def evaluate_secondary_probe(
     total = 0
     with torch.no_grad():
         for batch_index, batch in enumerate(loader):
-            if batch_index >= config.eval_batches:
+            if max_batches is not None and batch_index >= max_batches:
                 break
             input_ids = batch.input_ids.to(device)
             attention_mask = batch.attention_mask.to(device)
@@ -200,8 +245,8 @@ def evaluate_secondary_probe(
             total += int(valid.sum().item())
     model.train()
     return {
-        "val_loss": float(sum(losses) / max(1, len(losses))),
-        "val_q3": float(correct / max(1, total)),
+        f"{prefix}_loss": float(sum(losses) / max(1, len(losses))),
+        f"{prefix}_q3": float(correct / max(1, total)),
     }
 
 
@@ -263,10 +308,119 @@ def read_secondary_tsv(path: str | Path) -> list[tuple[str, str]]:
     return rows
 
 
+def read_hf_secondary_rows(
+    dataset_name: str,
+    *,
+    split: str = "train",
+    sequence_field: str = "sequence",
+    label_field: str = "labels",
+    streaming: bool = False,
+    max_samples: int | None = None,
+    load_dataset_fn=None,
+) -> list[tuple[str, str]]:
+    if load_dataset_fn is None:
+        try:
+            from datasets import load_dataset as load_dataset_fn
+        except ImportError as exc:
+            raise ImportError(
+                "Install Hugging Face datasets support with `python -m pip install datasets` "
+                "or use local TSV probe labels instead."
+            ) from exc
+
+    try:
+        dataset = load_dataset_fn(dataset_name, split=split, streaming=streaming)
+    except Exception as exc:
+        if streaming or "[" in split:
+            raise
+        try:
+            return read_hf_secondary_jsonl_split(
+                dataset_name,
+                split=split,
+                sequence_field=sequence_field,
+                label_field=label_field,
+                max_samples=max_samples,
+            )
+        except Exception:
+            raise exc
+
+    return _secondary_rows_from_iterable(
+        dataset,
+        dataset_name=dataset_name,
+        split=split,
+        sequence_field=sequence_field,
+        label_field=label_field,
+        max_samples=max_samples,
+    )
+
+
+def read_hf_secondary_jsonl_split(
+    dataset_name: str,
+    *,
+    split: str,
+    sequence_field: str = "sequence",
+    label_field: str = "labels",
+    max_samples: int | None = None,
+) -> list[tuple[str, str]]:
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise ImportError(
+            "Install Hugging Face Hub support with `python -m pip install huggingface_hub`, "
+            "or use a dataset split that can be loaded directly by `datasets`."
+        ) from exc
+
+    filename = f"{_test_name_from_split(split)}.jsonl"
+    path = hf_hub_download(repo_id=dataset_name, filename=filename, repo_type="dataset")
+    rows: list[dict[str, str]] = []
+    with Path(path).open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                rows.append(json.loads(line))
+    return _secondary_rows_from_iterable(
+        rows,
+        dataset_name=dataset_name,
+        split=split,
+        sequence_field=sequence_field,
+        label_field=label_field,
+        max_samples=max_samples,
+    )
+
+
+def _secondary_rows_from_iterable(
+    dataset,
+    *,
+    dataset_name: str,
+    split: str,
+    sequence_field: str,
+    label_field: str,
+    max_samples: int | None,
+) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for row in dataset:
+        if max_samples is not None and len(rows) >= max_samples:
+            break
+        if sequence_field not in row or label_field not in row:
+            available = ", ".join(sorted(str(key) for key in row.keys()))
+            raise KeyError(
+                f"Missing fields {sequence_field!r}/{label_field!r}. "
+                f"Available fields: {available}"
+            )
+        rows.append((str(row[sequence_field]), str(row[label_field])))
+    if not rows:
+        raise ValueError(f"No labeled rows loaded from Hugging Face dataset {dataset_name!r} split {split!r}.")
+    return rows
+
+
 def map_q8_to_q3(label: str) -> str:
     if label not in Q8_TO_Q3:
         raise ValueError(f"Unknown secondary-structure label: {label}")
     return Q8_TO_Q3[label]
+
+
+def map_secondary_label(label: str) -> str:
+    if label in IGNORE_LABELS:
+        return "."
+    return map_q8_to_q3(label)
 
 
 def synthetic_secondary_rows(
@@ -295,20 +449,119 @@ def _synthetic_label(residue: str) -> str:
     return "C"
 
 
-def _build_probe_dataset(config: ProbeConfig, alphabet: ProteinAlphabet) -> SecondaryStructureDataset:
+def _build_probe_splits(
+    config: ProbeConfig,
+    alphabet: ProteinAlphabet,
+) -> tuple[Dataset, Dataset, dict[str, Dataset]]:
+    has_tsv = any([config.labels_tsv, config.train_labels_tsv, config.val_labels_tsv, config.test_labels_tsv])
+    has_hf = config.hf_dataset is not None or any([config.hf_train_split, config.hf_val_split, config.hf_test_splits])
+    if config.synthetic and (has_tsv or has_hf):
+        raise ValueError("Use either --synthetic or labeled data sources, not both.")
+    if config.labels_tsv is not None and (config.train_labels_tsv is not None or config.val_labels_tsv is not None):
+        raise ValueError("Use either --labels-tsv or explicit --train-labels-tsv/--val-labels-tsv, not both.")
+    if has_tsv and has_hf:
+        raise ValueError("Use either local TSV probe labels or Hugging Face probe labels, not both.")
     if config.synthetic:
-        rows = synthetic_secondary_rows(
-            num_sequences=config.synthetic_sequences,
-            min_length=config.min_length,
-            max_length=config.max_length,
+        dataset = _build_rows_dataset(
+            synthetic_secondary_rows(
+                num_sequences=config.synthetic_sequences,
+                min_length=config.min_length,
+                max_length=config.max_length,
+                alphabet=alphabet,
+                seed=config.seed,
+            ),
+            config=config,
             alphabet=alphabet,
-            seed=config.seed,
         )
-    elif config.labels_tsv is not None:
-        rows = read_secondary_tsv(config.labels_tsv)
-    else:
-        raise ValueError("Provide --labels-tsv PATH or use --synthetic for a generated probe dataset.")
+        train_dataset, val_dataset = _split_dataset(dataset, seed=config.seed)
+        return train_dataset, val_dataset, {}
+
+    if config.train_labels_tsv is not None or config.val_labels_tsv is not None:
+        if config.train_labels_tsv is None or config.val_labels_tsv is None:
+            raise ValueError("Provide both --train-labels-tsv and --val-labels-tsv for explicit split mode.")
+        train_dataset = _build_tsv_dataset(config.train_labels_tsv, config=config, alphabet=alphabet)
+        val_dataset = _build_tsv_dataset(config.val_labels_tsv, config=config, alphabet=alphabet)
+        test_datasets = {
+            _test_name_from_path(path): _build_tsv_dataset(path, config=config, alphabet=alphabet)
+            for path in config.test_labels_tsv
+        }
+        return train_dataset, val_dataset, test_datasets
+
+    if config.hf_dataset is not None:
+        if config.hf_train_split is not None or config.hf_val_split is not None:
+            if config.hf_train_split is None or config.hf_val_split is None:
+                raise ValueError("Provide both --hf-train-split and --hf-val-split for explicit Hugging Face split mode.")
+            train_dataset = _build_hf_dataset(config.hf_dataset, config.hf_train_split, config=config, alphabet=alphabet)
+            val_dataset = _build_hf_dataset(config.hf_dataset, config.hf_val_split, config=config, alphabet=alphabet)
+        else:
+            dataset = _build_hf_dataset(config.hf_dataset, config.hf_split, config=config, alphabet=alphabet)
+            train_dataset, val_dataset = _split_dataset(dataset, seed=config.seed)
+        test_datasets = {
+            _test_name_from_split(split): _build_hf_dataset(config.hf_dataset, split, config=config, alphabet=alphabet)
+            for split in config.hf_test_splits
+        }
+        return train_dataset, val_dataset, test_datasets
+
+    if config.labels_tsv is not None:
+        dataset = _build_tsv_dataset(config.labels_tsv, config=config, alphabet=alphabet)
+        train_dataset, val_dataset = _split_dataset(dataset, seed=config.seed)
+        test_datasets = {
+            _test_name_from_path(path): _build_tsv_dataset(path, config=config, alphabet=alphabet)
+            for path in config.test_labels_tsv
+        }
+        return train_dataset, val_dataset, test_datasets
+
+    raise ValueError(
+        "Provide --labels-tsv, explicit --train-labels-tsv/--val-labels-tsv, "
+        "Hugging Face probe labels, "
+        "or use --synthetic for a generated probe dataset."
+    )
+
+
+def _build_tsv_dataset(path: str | Path, *, config: ProbeConfig, alphabet: ProteinAlphabet) -> SecondaryStructureDataset:
+    return _build_rows_dataset(read_secondary_tsv(path), config=config, alphabet=alphabet)
+
+
+def _build_hf_dataset(
+    dataset_name: str,
+    split: str,
+    *,
+    config: ProbeConfig,
+    alphabet: ProteinAlphabet,
+) -> SecondaryStructureDataset:
+    rows = read_hf_secondary_rows(
+        dataset_name,
+        split=split,
+        sequence_field=config.hf_sequence_field,
+        label_field=config.hf_label_field,
+        streaming=config.hf_streaming,
+        max_samples=config.hf_max_samples,
+    )
+    return _build_rows_dataset(rows, config=config, alphabet=alphabet)
+
+
+def _build_rows_dataset(
+    rows: Sequence[tuple[str, str]],
+    *,
+    config: ProbeConfig,
+    alphabet: ProteinAlphabet,
+) -> SecondaryStructureDataset:
     return SecondaryStructureDataset(rows, alphabet=alphabet, min_length=config.min_length, max_length=config.max_length)
+
+
+def _test_name_from_path(path: str | Path) -> str:
+    stem = Path(path).stem.lower()
+    return _safe_metric_name(stem)
+
+
+def _test_name_from_split(split: str) -> str:
+    stem = split.split("[", 1)[0].lower()
+    return _safe_metric_name(stem)
+
+
+def _safe_metric_name(stem: str) -> str:
+    safe = "".join(char if char.isalnum() else "_" for char in stem).strip("_")
+    return safe or "set"
 
 
 def _probe_train_step(

@@ -29,6 +29,7 @@ class ReportTests(unittest.TestCase):
 
             (probe / "probe_config.json").write_text(json.dumps({"steps": 5}), encoding="utf-8")
             (probe / "metrics.jsonl").write_text(json.dumps({"step": 5, "val_q3": 0.7}) + "\n", encoding="utf-8")
+            (probe / "test_metrics.json").write_text(json.dumps({"test_cb513_q3": 0.6}), encoding="utf-8")
             (probe / "probe_curves.png").write_bytes(b"png")
 
             output = build_report(
@@ -44,8 +45,9 @@ class ReportTests(unittest.TestCase):
             self.assertIn("training_curves.svg", text)
             self.assertIn("probe_curves.png", text)
             self.assertIn("`val_q3`", text)
+            self.assertIn("External test metrics", text)
+            self.assertIn("`test_cb513_q3`", text)
 
 
 if __name__ == "__main__":
     unittest.main()
-

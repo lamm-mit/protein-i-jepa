@@ -46,7 +46,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     probe = subparsers.add_parser("probe-secondary", help="Train a Q3 secondary-structure probe.")
     probe.add_argument("--checkpoint", type=str, default=None, help="Protein-I-JEPA checkpoint. Omit for scratch baseline.")
-    probe.add_argument("--labels-tsv", type=str, default=None, help="TSV with sequence and secondary-structure labels.")
+    probe.add_argument("--labels-tsv", type=str, default=None, help="Single TSV with sequence and labels; split randomly into train/validation.")
+    probe.add_argument("--train-labels-tsv", type=str, default=None, help="Training TSV for explicit split mode.")
+    probe.add_argument("--val-labels-tsv", type=str, default=None, help="Validation TSV for explicit split mode.")
+    probe.add_argument(
+        "--test-labels-tsv",
+        type=str,
+        action="append",
+        default=[],
+        help="External test TSV for final evaluation. Can be repeated.",
+    )
+    probe.add_argument("--hf-dataset", type=str, default=None, help="Hugging Face dataset with labeled secondary-structure rows.")
+    probe.add_argument("--hf-split", type=str, default="train", help="Single Hugging Face split to randomly divide into train/validation.")
+    probe.add_argument("--hf-train-split", type=str, default=None, help="Hugging Face split used to train the probe.")
+    probe.add_argument("--hf-val-split", type=str, default=None, help="Hugging Face split used to tune the probe.")
+    probe.add_argument(
+        "--hf-test-split",
+        "--test-hf-split",
+        dest="hf_test_splits",
+        type=str,
+        action="append",
+        default=[],
+        help="Hugging Face split used as a final external test. Can be repeated.",
+    )
+    probe.add_argument("--hf-sequence-field", type=str, default="sequence", help="Hugging Face field containing protein sequences.")
+    probe.add_argument("--hf-label-field", type=str, default="labels", help="Hugging Face field containing per-residue labels.")
+    probe.add_argument("--hf-streaming", action="store_true", help="Stream Hugging Face probe rows.")
+    probe.add_argument("--hf-max-samples", type=int, default=None, help="Optional row cap per Hugging Face probe split.")
     probe.add_argument("--synthetic", action="store_true", help="Use generated synthetic Q3 labels for smoke testing.")
     probe.add_argument("--output-dir", type=str, default="runs/secondary_probe")
     probe.add_argument("--synthetic-sequences", type=int, default=256)
@@ -55,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--batch-size", type=int, default=16)
     probe.add_argument("--steps", type=int, default=100)
     probe.add_argument("--eval-batches", type=int, default=4)
+    probe.add_argument("--test-eval-batches", type=int, default=None, help="Limit external test evaluation batches; default uses full test sets.")
     probe.add_argument("--log-interval", type=int, default=10)
     probe.add_argument("--seed", type=int, default=0)
     probe.add_argument("--lr", type=float, default=1e-3)
@@ -132,6 +159,18 @@ def main(argv: list[str] | None = None) -> None:
         config = ProbeConfig(
             checkpoint=args.checkpoint,
             labels_tsv=args.labels_tsv,
+            train_labels_tsv=args.train_labels_tsv,
+            val_labels_tsv=args.val_labels_tsv,
+            test_labels_tsv=args.test_labels_tsv,
+            hf_dataset=args.hf_dataset,
+            hf_split=args.hf_split,
+            hf_train_split=args.hf_train_split,
+            hf_val_split=args.hf_val_split,
+            hf_test_splits=args.hf_test_splits,
+            hf_sequence_field=args.hf_sequence_field,
+            hf_label_field=args.hf_label_field,
+            hf_streaming=args.hf_streaming,
+            hf_max_samples=args.hf_max_samples,
             synthetic=args.synthetic,
             output_dir=args.output_dir,
             synthetic_sequences=args.synthetic_sequences,
@@ -140,6 +179,7 @@ def main(argv: list[str] | None = None) -> None:
             batch_size=args.batch_size,
             steps=args.steps,
             eval_batches=args.eval_batches,
+            test_eval_batches=args.test_eval_batches,
             log_interval=args.log_interval,
             seed=args.seed,
             lr=args.lr,

@@ -5,20 +5,25 @@ description = "A small I-JEPA-style protein sequence representation learning sca
 requires-python = ">=3.10"
 dependencies = [
   "matplotlib>=3.7",
+  "numpy>=1.23",
   "torch>=2.0",
 ]
 
 [project.optional-dependencies]
 hf = [
   "datasets>=2.18",
+  "huggingface_hub>=0.23",
 ]
 dev = [
   "datasets>=2.18",
+  "huggingface_hub>=0.23",
 ]
 
 [project.scripts]
 protein-jepa = "protein_jepa.cli:main"
 protein-jepa-download-secondary = "protein_jepa.download_secondary:main"
+protein-jepa-download-netsurfp = "protein_jepa.download_netsurfp:main"
+protein-jepa-publish-netsurfp = "protein_jepa.publish_hf_secondary:main"
 protein-jepa-report = "protein_jepa.report:main"
 
 [build-system]
